@@ -86,8 +86,8 @@ if (-not (Test-Path $installDir)) {
 }
 
 # Define the GitHub URL for listener.exe (your provided URL)
-$listenerUrl = "https://raw.githubusercontent.com/nigelwebsterMGN/iam_agent/main/listener.exe"
-$listenerExePath = Join-Path $installDir "listener.exe"
+$listenerUrl = "https://raw.githubusercontent.com/nigelwebsterMGN/iam_agent/main/listener_1.0.0.exe"
+$listenerExePath = Join-Path $installDir "listener_1.0.0.exe"
 
 # Download listener.exe to the chosen installation directory
 Download-File -Url $listenerUrl -Destination $listenerExePath

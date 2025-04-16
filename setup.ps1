@@ -1,198 +1,94 @@
-# Define registry key, service name, and default installation directory
-$regKey = "HKLM:\SOFTWARE\iam_automation"
-$serviceName = "AzureRelayListener"
-$defaultInstallDir = "C:\program files\iam_agent"
+param (
+    [string]$cloudflare_domain,
+    [string]$cloudflare_scoped_api,
+    [string]$clientId,
+    [string]$cloudflare_api_url = "https://api.cloudflare.com/client/v4"
+)
 
-# Define NSSM installation folder and path to NSSM executable
-$NssmInstallFolder = "C:\nssm"
-$nssmPath = Join-Path $NssmInstallFolder "win64\nssm.exe"
+$ErrorActionPreference = "Stop"
+$installDir = "C:\Program Files\iam_agent"
+$nssmPath = "C:\nssm\win64\nssm.exe"
+$listenerExeUrl = "https://raw.githubusercontent.com/nigelwebsterMGN/iam_agent/main/listener.exe"
+$cloudflaredUrl = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
 
-# Function: Install-NSSM if not already present
-function Install-NSSM {
-    param (
-        [string]$InstallFolder = "C:\nssm"
-    )
-    $nssmZipUrl = "https://nssm.cc/release/nssm-2.24.zip"
-    $zipFile = Join-Path $env:TEMP "nssm.zip"
-    $tempExtract = Join-Path $env:TEMP "nssm_extract"
+# Create install folder
+if (!(Test-Path $installDir)) { New-Item -ItemType Directory -Path $installDir -Force | Out-Null }
 
-    Write-Host "NSSM not found. Downloading NSSM from $nssmZipUrl..."
+# -------------------- Get Machine ID --------------------
+function Get-MachineId {
     try {
-        Invoke-WebRequest -Uri $nssmZipUrl -OutFile $zipFile -UseBasicParsing
-    } catch {
-        Write-Host "Error downloading NSSM: $_"
-        exit 1
-    }
-
-    Write-Host "Extracting NSSM..."
-    try {
-        if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force }
-        Expand-Archive -Path $zipFile -DestinationPath $tempExtract -Force
-    } catch {
-        Write-Host "Error extracting NSSM: $_"
-        exit 1
-    }
-    
-    # Locate the extracted NSSM folder (e.g. "nssm-2.24")
-    $extractedFolder = Get-ChildItem -Path $tempExtract | Where-Object { $_.PSIsContainer } | Select-Object -First 1
-    if (-not $extractedFolder) {
-        Write-Host "Failed to locate extracted NSSM folder."
-        exit 1
-    }
-    $sourceWin64 = Join-Path $extractedFolder.FullName "win64"
-    $destWin64 = Join-Path $InstallFolder "win64"
-    if (-not (Test-Path $destWin64)) {
-        New-Item -ItemType Directory -Path $destWin64 -Force | Out-Null
-    }
-    Copy-Item -Path (Join-Path $sourceWin64 "*") -Destination $destWin64 -Recurse -Force
-
-    Remove-Item $zipFile -Force
-    Remove-Item $tempExtract -Recurse -Force
-    Write-Host "NSSM installed successfully to $InstallFolder."
-}
-
-# Check if NSSM is installed, if not then install it
-if (-not (Test-Path $nssmPath)) {
-    Install-NSSM -InstallFolder $NssmInstallFolder
-}
-
-# Function: Download a file from a URL
-function Download-File {
-    param(
-        [string]$Url,
-        [string]$Destination
-    )
-    try {
-        Write-Host "Downloading file from $Url to $Destination..."
-        $client = New-Object System.Net.WebClient
-        $client.DownloadFile($Url, $Destination)
-        Write-Host "Download completed."
-    }
-    catch {
-        Write-Host "Error downloading file: $_"
-        exit 1
-    }
-}
-
-# Prompt for installation directory (default provided)
-$installDir = Read-Host "Enter installation directory for listener.exe (Default: $defaultInstallDir)"
-if ([string]::IsNullOrWhiteSpace($installDir)) {
-    $installDir = $defaultInstallDir
-}
-
-if (-not (Test-Path $installDir)) {
-    Write-Host "Creating installation directory: $installDir"
-    New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-}
-
-# Define the GitHub URL for listener.exe (your provided URL)
-$listenerUrl = "https://raw.githubusercontent.com/nigelwebsterMGN/iam_agent/main/listener_1.0.0.exe"
-$listenerExePath = Join-Path $installDir "listener_1.0.0.exe"
-
-# Download listener.exe to the chosen installation directory
-Download-File -Url $listenerUrl -Destination $listenerExePath
-
-# Function: Manage registry values
-function Manage-RegistryValues {
-    $values = @(
-        @{ Name = "ns"; Prompt = "Enter value for your nameserver instance (e.g., namespace.servicebus.windows.net, no http://):" },
-        @{ Name = "path"; Prompt = "Enter value for endpoint (This matches your endpoint name):" },
-        @{ Name = "keyrule"; Prompt = "Enter value for keyrule (Usually 'default'):" },
-        @{ Name = "primarykey"; Prompt = "Enter value for primarykey (Obtained from your endpoint in Azure):" },
-        @{ Name = "secondarykey"; Prompt = "Enter value for secondarykey (Obtained from your endpoint in Azure):" }
-    )
-
-    if (Test-Path $regKey) {
-        Write-Host "Registry key '$regKey' exists."
-        $update = Read-Host "Do you want to update the registry values? (y/n)"
-        if ($update -notlike "y") {
-            Write-Host "Skipping registry updates."
-            return $false
-        }
-    } else {
-        Write-Host "Registry key '$regKey' does not exist. Creating it..."
-        New-Item -Path $regKey -Force | Out-Null
-    }
-
-    foreach ($value in $values) {
-        $existingValue = (Get-ItemProperty -Path $regKey -ErrorAction SilentlyContinue)."${($value.Name)}"
-        if ($null -ne $existingValue) {
-            Write-Host "Key '$($value.Name)' exists with value: $existingValue"
-        }
-        $newValue = Read-Host $value.Prompt
-        Set-ItemProperty -Path $regKey -Name $value.Name -Value $newValue
-        Write-Host "Key '$($value.Name)' set to '$newValue'."
-    }
-
-    Write-Host "Registry values have been updated successfully."
-    return $true
-}
-
-# Function: Manage the service registration using NSSM
-function Manage-Service {
-    param(
-         [string]$ListenerExePath
-    )
-    
-    # Check if the service already exists
-    if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
-        Write-Host "Service '$serviceName' already exists."
-        $uninstall = Read-Host "Do you want to uninstall the service? (y/n)"
-        if ($uninstall -like "y") {
-            Write-Host "Stopping and removing service '$serviceName'..."
-            Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
-            & $nssmPath remove $serviceName confirm
-            Write-Host "Service '$serviceName' has been uninstalled."
-            return $true
+        $uuid = (Get-WmiObject -Class Win32_ComputerSystemProduct).UUID
+        if ($uuid -and $uuid -ne 'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF') {
+            return $uuid
         } else {
-            Write-Host "Service will remain installed. No changes made."
-            return $false
+            return (Get-CimInstance Win32_BIOS).SerialNumber
         }
-    } else {
-        Write-Host "Service '$serviceName' does not exist."
-        $install = Read-Host "Do you want to install the service? (y/n)"
-        if ($install -like "y") {
-            Write-Host "Registering '$ListenerExePath' as a service using NSSM..."
-            & $nssmPath install $serviceName $ListenerExePath
-            # Set the working directory for the service
-            & $nssmPath set $serviceName AppDirectory $installDir
-            # Optionally redirect standard output and error to log files
-            & $nssmPath set $serviceName AppStdout (Join-Path $installDir "listener_stdout.log")
-            & $nssmPath set $serviceName AppStderr (Join-Path $installDir "listener_stderr.log")
-            
-            Write-Host "Starting service '$serviceName'..."
-            Start-Service -Name $serviceName
-            Write-Host "Service '$serviceName' has been registered and started successfully."
-            return $true
-        } else {
-            $runListener = Read-Host "Do you want to run listener.exe directly as an application? (y/n)"
-            if ($runListener -like "y") {
-                if (Test-Path $ListenerExePath) {
-                    Write-Host "Starting listener.exe directly..."
-                    Start-Process -FilePath $ListenerExePath -NoNewWindow
-                } else {
-                    Write-Host "Error: listener.exe not found in the installation directory."
-                    exit 1
-                }
-            } else {
-                Write-Host "Exiting script without making changes."
-                exit 0
-            }
-        }
+    } catch {
+        return (Get-Date).Ticks
     }
 }
 
-# Main logic
-Write-Host "Checking registry values..."
-$registryUpdated = Manage-RegistryValues
+$machineId = Get-MachineId
+$tunnelName = "agent-$clientId-$machineId"
 
-Write-Host "Managing service registration..."
-$serviceUpdated = Manage-Service -ListenerExePath $listenerExePath
-
-if (-not $registryUpdated -and -not $serviceUpdated) {
-    Write-Host "No changes were made to registry values or the service. Exiting script."
-    exit 0
+# -------------------- Get Account ID --------------------
+$accountRes = Invoke-RestMethod -Method GET -Uri "$cloudflare_api_url/accounts" -Headers @{
+    "Authorization" = "Bearer $cloudflare_scoped_api"
+    "Content-Type" = "application/json"
 }
+$accountId = ($accountRes.result | Where-Object { $_.name -like "*$cloudflare_domain*" }).id
 
-Write-Host "Script execution completed."
-Read-Host "Press Enter to exit"
+# -------------------- Get Zone ID --------------------
+$zoneRes = Invoke-RestMethod -Method GET -Uri "$cloudflare_api_url/zones?name=$cloudflare_domain" -Headers @{
+    "Authorization" = "Bearer $cloudflare_scoped_api"
+    "Content-Type" = "application/json"
+}
+$zoneId = $zoneRes.result[0].id
+
+# -------------------- Create Tunnel --------------------
+$tunnelBody = @{ name = $tunnelName } | ConvertTo-Json -Compress
+$tunnelRes = Invoke-RestMethod -Method POST -Uri "$cloudflare_api_url/accounts/$accountId/cfd_tunnel" -Headers @{
+    "Authorization" = "Bearer $cloudflare_scoped_api"
+    "Content-Type" = "application/json"
+} -Body $tunnelBody
+$tunnelId = $tunnelRes.result.id
+
+# -------------------- Get Tunnel Token --------------------
+$tokenRes = Invoke-RestMethod -Method POST -Uri "$cloudflare_api_url/accounts/$accountId/cfd_tunnel/$tunnelId/token" -Headers @{
+    "Authorization" = "Bearer $cloudflare_scoped_api"
+    "Content-Type" = "application/json"
+}
+$tunnelToken = $tokenRes.result.token
+
+# -------------------- Create DNS Record --------------------
+$subdomain = "$tunnelName.$cloudflare_domain"
+$dnsBody = @{
+    type = "CNAME"
+    name = $subdomain
+    content = "$tunnelId.cfargotunnel.com"
+    proxied = $true
+} | ConvertTo-Json -Compress
+
+Invoke-RestMethod -Method POST -Uri "$cloudflare_api_url/zones/$zoneId/dns_records" -Headers @{
+    "Authorization" = "Bearer $cloudflare_scoped_api"
+    "Content-Type" = "application/json"
+} -Body $dnsBody
+
+# -------------------- Install cloudflared --------------------
+$cloudflaredPath = "$installDir\cloudflared.exe"
+Invoke-WebRequest -Uri $cloudflaredUrl -OutFile $cloudflaredPath
+Start-Process -FilePath $cloudflaredPath -ArgumentList "service install $tunnelToken" -Wait
+Start-Process -FilePath $cloudflaredPath -ArgumentList "service run" -Wait
+
+# -------------------- Download listener.exe --------------------
+$listenerPath = "$installDir\listener.exe"
+Invoke-WebRequest -Uri $listenerExeUrl -OutFile $listenerPath
+
+# -------------------- Register listener as a service --------------------
+& $nssmPath install CloudflareTunnelListener $listenerPath
+& $nssmPath start CloudflareTunnelListener
+
+# -------------------- Done --------------------
+Write-Host "`n✅ Agent installed successfully."
+Write-Host "🔐 Tunnel: $tunnelName"
+Write-Host "🌐 Access URL: https://$subdomain/run-command"

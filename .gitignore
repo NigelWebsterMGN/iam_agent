@@ -1,0 +1,5 @@
+# Dependency directories
+node_modules/
+
+setup.ps1
+listener.js

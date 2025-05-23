@@ -30,7 +30,8 @@ $logFile = "$installDir\install.log"
 $setupFile = "$installDir\setup.json"
 $listenerPath = "$installDir\listener.exe"
 $listenerService = Get-Service -Name CloudflareTunnelListener -ErrorAction SilentlyContinue
-$listenerExeUrl = "https://github.com/MGN-Consultancy/IAM-AGENT-PUBLIC/raw/f7df796afc185fafee295ae6632d56b576b14ae8/listener.exe"
+$listenerExeUrl = "https://github.com/MGN-Consultancy/IAM-AGENT-PUBLIC/raw/d703f08808d36353605803e1f89a38a62cab1ba8/listener.exe"
+$servicename = "CloudflareTunnelListener"
 
 function Log($msg) {
     if (!(Test-Path $logFile)) { New-Item -ItemType File -Path $logFile -Force | Out-Null }
@@ -218,6 +219,61 @@ if ($tunnelMatch) {
     }
 }
 
+# === Cloudflare Tunnel Application and DNS Setup ===
+# Always set up ingress and DNS, even if they exist
+try {
+    # Fetch tunnel ID if not already set
+    if (-not $tunnelId) {
+        $tunnelList = Invoke-RestMethod -Method GET -Uri "$cloudflare_api_url/accounts/$accountId/cfd_tunnel" -Headers @{ Authorization = "Bearer $cloudflare_scoped_api"; "Content-Type" = "application/json" }
+        $tunnelMatch = $tunnelList.result | Where-Object { $_.name -eq $tunnelName -and $_.deleted_at -eq $null }
+        if ($tunnelMatch) {
+            $tunnelId = $tunnelMatch.id
+        } else {
+            throw "Tunnel not found after creation."
+        }
+    }
+    Log "Completed creating tunnel. Tunnel ID: $tunnelId"
+
+    # Construct DNS name
+    $tunneldns = "$tunnelName.$cloudflare_domain"
+
+    # Always create/update application ingress rule
+    $ingressConfig = @{
+        config = @{
+            ingress = @(
+                @{ hostname = $tunneldns; service = "http://localhost:3030"; originRequest = @{} },
+                @{ service = "http_status:404" }
+            )
+        }
+    } | ConvertTo-Json -Depth 6
+    $configUrl = "$cloudflare_api_url/accounts/$accountId/cfd_tunnel/$tunnelId/configurations"
+    $configRes = Invoke-RestMethod -Method PUT -Uri $configUrl -Headers @{ Authorization = "Bearer $cloudflare_scoped_api"; "Content-Type" = "application/json" } -Body $ingressConfig
+    Log "Completed application rule for tunnel $tunnelId."
+
+    # Create or update DNS record
+    $dnsBody = @{
+        type = "CNAME"
+        proxied = $true
+        name = $tunneldns
+        content = "$tunnelId.cfargotunnel.com"
+    } | ConvertTo-Json -Depth 4
+    $dnsUrl = "$cloudflare_api_url/zones/$zoneId/dns_records"
+    # Check if DNS record exists
+    $existingDns = Invoke-RestMethod -Method GET -Uri "$cloudflare_api_url/zones/$zoneId/dns_records?type=CNAME&name=$tunneldns" -Headers @{ Authorization = "Bearer $cloudflare_scoped_api"; "Content-Type" = "application/json" }
+    if ($existingDns.result.Count -gt 0) {
+        $recordId = $existingDns.result[0].id
+        $updateDnsUrl = "$cloudflare_api_url/zones/$zoneId/dns_records/$recordId"
+        $dnsRes = Invoke-RestMethod -Method PUT -Uri $updateDnsUrl -Headers @{ Authorization = "Bearer $cloudflare_scoped_api"; "Content-Type" = "application/json" } -Body $dnsBody
+        Log "Updated DNS record for $tunneldns -> $tunnelId.cfargotunnel.com."
+    } else {
+        $dnsRes = Invoke-RestMethod -Method POST -Uri $dnsUrl -Headers @{ Authorization = "Bearer $cloudflare_scoped_api"; "Content-Type" = "application/json" } -Body $dnsBody
+        Log "Created DNS record for $tunneldns -> $tunnelId.cfargotunnel.com."
+    }
+} catch {
+    Log "Error during tunnel application/DNS setup: $_"
+    throw $_
+}
+
 if (-not $skipCloudflaredSetup) {
     $cloudflaredPath = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
     if (!(Test-Path $cloudflaredPath)) {
@@ -247,7 +303,7 @@ if (-not $skipCloudflaredSetup) {
 log "Checking for existing installations of the listener"
 
 if (-not (Test-Path $listenerPath)) {
-    logt "Downloading listener.exe..."
+    log "Downloading listener.exe..."
     Invoke-WebRequest -Uri $listenerExeUrl -OutFile $listenerPath
 }
 
@@ -267,7 +323,7 @@ if ($listenerService -and $listenerService.Status -eq 'Running') {
 
           # === Install the service using cmd.exe to avoid argument issues ===
         log "Re-installing the Listener Service"
-        $cmd = "$nssmPath install $serviceName `"$listenerPath`""
+        $cmd = "$nssmPath install $serviceName `"$listenerPath`"" 
         Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -Wait
 
 
@@ -294,7 +350,7 @@ if ($listenerService -and $listenerService.Status -eq 'Running') {
 } else {
 
            # === Install the service using cmd.exe to avoid argument issues ===
-        $cmd = "$nssmPath install $serviceName `"$listenerPath`""
+        $cmd = "$nssmPath install $serviceName `"$listenerPath`"" 
         Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -Wait
 
 
@@ -315,7 +371,7 @@ if ($listenerService -and $listenerService.Status -eq 'Running') {
 
 $magicWord = [guid]::NewGuid().ToString()
 $setup = @{ tunnelName = $tunnelName; machineName = $machinename; clientId = $clientId; magicWord = $magicWord; magicwordset = "False" } | ConvertTo-Json -Depth 5
-$setup | Set-Content -Path $setupFile -Encoding UTF8
+$setup | Set-Content -Path $setupFile -Encoding utf8
 
 Log "Setup complete. Tunnel and listener are now installed."
 Log "Magic word saved for secure communications, This will be imported by the web front end on first run and all future communications must include the magicword in additon to API key"

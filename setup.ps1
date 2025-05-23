@@ -244,7 +244,7 @@ if (-not $skipCloudflaredSetup) {
 # Installing the Listner Service
 
 # Download listener if missing
-log "Checking for existing installations of the listener"
+log "Checking for existing installations of the listener"
 
 if (-not (Test-Path $listenerPath)) {
     logt "Downloading listener.exe..."
@@ -314,7 +314,7 @@ if ($listenerService -and $listenerService.Status -eq 'Running') {
 }
 
 $magicWord = [guid]::NewGuid().ToString()
-$setup = @{ tunnelName = $tunnelName; machineName = $machinename; clientId = $clientId; magicWord = $magicWord } | ConvertTo-Json -Depth 5
+$setup = @{ tunnelName = $tunnelName; machineName = $machinename; clientId = $clientId; magicWord = $magicWord; magicwordset = "False" } | ConvertTo-Json -Depth 5
 $setup | Set-Content -Path $setupFile -Encoding UTF8
 
 Log "Setup complete. Tunnel and listener are now installed."

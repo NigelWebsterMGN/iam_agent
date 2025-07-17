@@ -18,22 +18,9 @@ function Reset-GlobalVars {
     $tunnelName = $null
 }
 
-Reset-GlobalVars} catch {
-    Log "CRITICAL ERROR: Failed to create setup.json file: $_"
-    Log "Setup.json creation failed at: $setupFile"
-    Log "This is a critical component - the node will not function without this file"
-    
-    # Get diagnostic information
-    Get-DiagnosticInfo
-    
-    # Additional diagnostic information
-    Log "Additional Diagnostic Information:"
-    Log "- Install directory exists: $(Test-Path $installDir)"
-    Log "- Install directory path: $installDir"
-    Log "- Setup file path: $setupFile"
-    Log "- Current user: $env:USERNAME"
-    Log "- Current directory: $(Get-Location)"
-    Log "- PowerShell execution policy: $(Get-ExecutionPolicy)"ionPreference = "Stop"
+Reset-GlobalVars
+
+$ErrorActionPreference = "Stop"
 $installDir = "C:\Program Files\iam_agent"
 if (!(Test-Path $installDir)) {
     New-Item -ItemType Directory -Path $installDir -Force | Out-Null
@@ -500,13 +487,7 @@ try {
     Log "This is a critical component - the node will not function without this file"
     
     # Additional diagnostic information
-    Log "Diagnostic Information:"
-    Log "- Install directory exists: $(Test-Path $installDir)"
-    Log "- Install directory path: $installDir"
-    Log "- Setup file path: $setupFile"
-    Log "- Current user: $env:USERNAME"
-    Log "- Current directory: $(Get-Location)"
-    Log "- PowerShell execution policy: $(Get-ExecutionPolicy)"
+    Show-DiagnosticInfo
     
     # Try to create the file again with more verbose error handling
     try {

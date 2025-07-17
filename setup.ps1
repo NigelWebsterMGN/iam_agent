@@ -18,9 +18,22 @@ function Reset-GlobalVars {
     $tunnelName = $null
 }
 
-Reset-GlobalVars
-
-$ErrorActionPreference = "Stop"
+Reset-GlobalVars} catch {
+    Log "CRITICAL ERROR: Failed to create setup.json file: $_"
+    Log "Setup.json creation failed at: $setupFile"
+    Log "This is a critical component - the node will not function without this file"
+    
+    # Get diagnostic information
+    Get-DiagnosticInfo
+    
+    # Additional diagnostic information
+    Log "Additional Diagnostic Information:"
+    Log "- Install directory exists: $(Test-Path $installDir)"
+    Log "- Install directory path: $installDir"
+    Log "- Setup file path: $setupFile"
+    Log "- Current user: $env:USERNAME"
+    Log "- Current directory: $(Get-Location)"
+    Log "- PowerShell execution policy: $(Get-ExecutionPolicy)"ionPreference = "Stop"
 $installDir = "C:\Program Files\iam_agent"
 if (!(Test-Path $installDir)) {
     New-Item -ItemType Directory -Path $installDir -Force | Out-Null
@@ -37,6 +50,35 @@ function Log($msg) {
     if (!(Test-Path $logFile)) { New-Item -ItemType File -Path $logFile -Force | Out-Null }
     Add-Content -Path $logFile -Value "$(Get-Date -Format o): $msg"
     if (-not $silent) { Write-Host $msg }
+}
+
+function Test-FileSystemPermissions($path) {
+    try {
+        $testFile = Join-Path $path "test_permissions.tmp"
+        "test" | Out-File -FilePath $testFile -Force
+        if (Test-Path $testFile) {
+            Remove-Item $testFile -Force
+            return $true
+        }
+        return $false
+    } catch {
+        return $false
+    }
+}
+
+function Get-DiagnosticInfo {
+    Log "=== DIAGNOSTIC INFORMATION ==="
+    Log "PowerShell Version: $($PSVersionTable.PSVersion)"
+    Log "Current User: $env:USERNAME"
+    Log "Current Directory: $(Get-Location)"
+    Log "Install Directory: $installDir"
+    Log "Install Directory Exists: $(Test-Path $installDir)"
+    Log "Setup File Path: $setupFile"
+    Log "Log File Path: $logFile"
+    Log "Execution Policy: $(Get-ExecutionPolicy)"
+    Log "Running as Admin: $(([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] 'Administrator'))"
+    Log "File System Permissions: $(Test-FileSystemPermissions $installDir)"
+    Log "=============================="
 }
 
 if ($uninstall) {
@@ -135,6 +177,32 @@ $tunnelName = "iam-agent-$clientId-$machineId"
 $dnsName = "$tunnelName.$cloudflare_domain"
 $tunnelTokenPath = "$installDir\tunnel_token.txt"
 $skipCloudflaredSetup = $false
+
+# === VALIDATION: Ensure all required variables are set ===
+Log "Validating required parameters..."
+$validationErrors = @()
+
+if (-not $cloudflare_domain) { $validationErrors += "cloudflare_domain is required" }
+if (-not $cloudflare_scoped_api) { $validationErrors += "cloudflare_scoped_api is required" }
+if (-not $clientId) { $validationErrors += "clientId is required" }
+if (-not $machineId) { $validationErrors += "machineId could not be determined" }
+if (-not $machinename) { $validationErrors += "machinename could not be determined" }
+
+if ($validationErrors.Count -gt 0) {
+    Log "VALIDATION ERRORS FOUND:"
+    foreach ($error in $validationErrors) {
+        Log "- $error"
+    }
+    throw "Script cannot continue with missing required parameters"
+}
+
+Log "Validation successful. Proceeding with setup..."
+Log "- Cloudflare domain: $cloudflare_domain"
+Log "- Client ID: $clientId"
+Log "- Machine ID: $machineId"
+Log "- Machine name: $machinename"
+Log "- Tunnel name: $tunnelName"
+Log "- DNS name: $dnsName"
 
 Log "Getting account and zone ID..."
 try {
@@ -369,9 +437,138 @@ if ($listenerService -and $listenerService.Status -eq 'Running') {
         Log "Listener installed and started."
 }
 
-$magicWord = [guid]::NewGuid().ToString()
-$setup = @{ tunnelName = $tunnelName; machineName = $machinename; clientId = $clientId; magicWord = $magicWord; magicwordset = "False" } | ConvertTo-Json -Depth 5
-$setup | Set-Content -Path $setupFile -Encoding utf8
+# === CRITICAL: Create setup.json file ===
+try {
+    Log "Creating setup.json configuration file..."
+    
+    # Early diagnostics before file creation
+    Log "Pre-creation diagnostics:"
+    Log "- tunnelName: $tunnelName"
+    Log "- machinename: $machinename"
+    Log "- clientId: $clientId"
+    Log "- setupFile path: $setupFile"
+    Log "- installDir exists: $(Test-Path $installDir)"
+    
+    # Generate magic word
+    $magicWord = [guid]::NewGuid().ToString()
+    Log "Generated magic word: $($magicWord.Substring(0, 8))..."
+    
+    # Create setup configuration
+    $setup = @{ 
+        tunnelName = $tunnelName
+        machineName = $machinename
+        clientId = $clientId
+        magicWord = $magicWord
+        magicwordset = "False"
+    } | ConvertTo-Json -Depth 5
+    
+    # Ensure directory exists
+    if (!(Test-Path $installDir)) {
+        New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+        Log "Created installation directory: $installDir"
+    }
+    
+    # Write setup file with error handling
+    $setup | Set-Content -Path $setupFile -Encoding utf8 -ErrorAction Stop
+    
+    # Verify file was created successfully
+    if (Test-Path $setupFile) {
+        $fileSize = (Get-Item $setupFile).Length
+        Log "Setup.json file created successfully at: $setupFile (Size: $fileSize bytes)"
+        
+        # Verify file content is valid JSON
+        try {
+            $testRead = Get-Content -Path $setupFile -Raw | ConvertFrom-Json
+            if ($testRead.magicWord -eq $magicWord) {
+                Log "Setup.json file validation successful - magic word matches"
+            } else {
+                throw "Setup.json validation failed - magic word mismatch"
+            }
+        } catch {
+            throw "Setup.json file is not valid JSON: $_"
+        }
+    } else {
+        throw "Setup.json file was not created at expected location: $setupFile"
+    }
+    
+    Log "Setup complete. Tunnel and listener are now installed."
+    Log "Magic word saved for secure communications, This will be imported by the web front end on first run and all future communications must include the magicword in additon to API key"
+    
+} catch {
+    Log "CRITICAL ERROR: Failed to create setup.json file: $_"
+    Log "Setup.json creation failed at: $setupFile"
+    Log "This is a critical component - the node will not function without this file"
+    
+    # Additional diagnostic information
+    Log "Diagnostic Information:"
+    Log "- Install directory exists: $(Test-Path $installDir)"
+    Log "- Install directory path: $installDir"
+    Log "- Setup file path: $setupFile"
+    Log "- Current user: $env:USERNAME"
+    Log "- Current directory: $(Get-Location)"
+    Log "- PowerShell execution policy: $(Get-ExecutionPolicy)"
+    
+    # Try to create the file again with more verbose error handling
+    try {
+        Log "Attempting to create setup.json file again..."
+        
+        # Try creating just the directory first
+        if (!(Test-Path $installDir)) {
+            New-Item -ItemType Directory -Path $installDir -Force -ErrorAction Stop | Out-Null
+        }
+        
+        # Try a simpler approach to file creation
+        $setupJson = @"
+{
+    "tunnelName": "$tunnelName",
+    "machineName": "$machinename",
+    "clientId": "$clientId",
+    "magicWord": "$magicWord",
+    "magicwordset": "False"
+}
+"@
+        
+        [System.IO.File]::WriteAllText($setupFile, $setupJson, [System.Text.Encoding]::UTF8)
+        
+        if (Test-Path $setupFile) {
+            Log "Setup.json file created successfully on retry"
+        } else {
+            Log "Setup.json file creation failed on retry"
+        }
+        
+    } catch {
+        Log "Retry attempt also failed: $_"
+        Log "SCRIPT WILL EXIT - Node setup incomplete without setup.json file"
+        throw "Critical setup.json file creation failed: $_"
+    }
+}
 
-Log "Setup complete. Tunnel and listener are now installed."
-Log "Magic word saved for secure communications, This will be imported by the web front end on first run and all future communications must include the magicword in additon to API key"
+# === FINAL VALIDATION ===
+Log "Performing final validation..."
+if (Test-Path $setupFile) {
+    try {
+        $finalValidation = Get-Content -Path $setupFile -Raw | ConvertFrom-Json
+        if ($finalValidation.magicWord -and $finalValidation.tunnelName -and $finalValidation.clientId) {
+            Log "SUCCESS: Setup.json file validated successfully"
+            Log "Final setup.json contains:"
+            Log "- Tunnel Name: $($finalValidation.tunnelName)"
+            Log "- Machine Name: $($finalValidation.machineName)"
+            Log "- Client ID: $($finalValidation.clientId)"
+            Log "- Magic Word: $($finalValidation.magicWord.Substring(0, 8))..."
+            Log "- Magic Word Set: $($finalValidation.magicwordset)"
+        } else {
+            throw "Setup.json file is missing required fields"
+        }
+    } catch {
+        Log "CRITICAL ERROR: Setup.json file validation failed: $_"
+        throw "Final validation failed: $_"
+    }
+} else {
+    Log "CRITICAL ERROR: Setup.json file does not exist at: $setupFile"
+    throw "Setup.json file was not created - node will not function"
+}
+
+Log "========================================="
+Log "SETUP COMPLETED SUCCESSFULLY"
+Log "Node is ready for operation"
+Log "========================================="
